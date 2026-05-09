@@ -1,0 +1,13 @@
+{
+  "itemGroup.sableportlibmod": "Example Mod Tab",
+  "block.sableportlibmod.example_block": "Example Block",
+  "item.sableportlibmod.example_item": "Example Item",
+
+  "sableportlibmod.configuration.title": "Sableport Lib Mod Configs",
+  "sableportlibmod.configuration.section.sableportlibmod.common.toml": "Sableport Lib Mod Configs",
+  "sableportlibmod.configuration.section.sableportlibmod.common.toml.title": "Sableport Lib Mod Configs",
+  "sableportlibmod.configuration.items": "Item List",
+  "sableportlibmod.configuration.logDirtBlock": "Log Dirt Block",
+  "sableportlibmod.configuration.magicNumberIntroduction": "Magic Number Text",
+  "sableportlibmod.configuration.magicNumber": "Magic Number"
+}
