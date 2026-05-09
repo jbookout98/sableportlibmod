@@ -61,7 +61,10 @@ public final class SubLevelDimensionTeleport {
         final ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(sourceLevel);
         final ServerSubLevelContainer targetContainer = SubLevelContainer.getContainer(targetLevel);
 
-        if (sourceContainer == null || targetContainer == null) return null;
+        if (targetContainer == null) {
+            return null;
+        }
+
 
         UUID rootId = com.sableport.mod.storage.SubLevelHierarchyPerDimension.getRootId(source, sourceContainer);
 
@@ -79,15 +82,9 @@ public final class SubLevelDimensionTeleport {
             return sameDimTeleport(rootSource, sourceLevel, targetPosition, targetOrientation);
         }
 
-        final List<ServerSubLevel> family = new ArrayList<>();
-        family.add(rootSource);
+        List<ServerSubLevel> family = collectFamilyTransitive(rootSource, sourceContainer);
 
-        final List<ServerSubLevel> collected = collectFamilyTransitive(rootSource, sourceContainer);
-        for (final ServerSubLevel member : collected) {
-            if (!member.getUniqueId().equals(sourceUuid)) {
-                family.add(member);
-            }
-        }
+
 
 
         final Map<UUID, CompoundTag> savedPlots = new HashMap<>();
@@ -144,9 +141,7 @@ public final class SubLevelDimensionTeleport {
             final int localX = p.plotPos.x - origin.x;
             final int localZ = p.plotPos.z - origin.y;
 
-            sourceContainer.removeSubLevel(sub, SubLevelRemovalReason.UNLOADED);
-
-            sourceContainer.getOccupancy().clear(sourceContainer.getIndex(localX, localZ));
+            sourceContainer.removeSubLevel(sub, SubLevelRemovalReason.REMOVED);
 
             SubLevelOccupancySavedData.getOrLoad(sourceLevel).setDirty();
 
@@ -160,11 +155,16 @@ public final class SubLevelDimensionTeleport {
 
         final int logPlotSize = sourceContainer.getLogPlotSize();
         final int blockShift = logPlotSize + 4;
-        final int plotSizeBlocks = 1 << blockShift;
+        final int plotSizeBlocks = 1 << blockShift; //bit operation basically 2^blockshift
         final int sectionShift = (sourceLevel.getMinBuildHeight() - targetLevel.getMinBuildHeight()) >> 4;
-
+        //sectionShift where to put in y when teleport correctly.
+        // minBuiltHeight - minBuiltHeight
+        // overworld -64 - 0 -64 / 16
+        //=-4. So move upwards 4 sections from wherever.
         final List<PlotTranslation> translations = new ArrayList<>();
 
+        //Whole loop is important later for math.
+        //Basically when saving nbt data you need old positions to get it properly saved and properly reloaded.
         for (int i = 0; i < family.size(); i++) {
 
             final ServerLevelPlot plot = family.get(i).getPlot();
@@ -205,6 +205,7 @@ public final class SubLevelDimensionTeleport {
                         )
                 );
             }
+            //Making sure we clear tracking at new plots we are spawning to.
 
             final UUID memberId = member.getUniqueId();
             final PlotTranslation childTranslation = translations.get(i);
@@ -221,7 +222,10 @@ public final class SubLevelDimensionTeleport {
                 destination = newMember;
             }
 
+            //Rewrite NBT data to properly follow the new dimension.
+            //All coord data should rewritten here
             final CompoundTag childTag = savedPlots.get(memberId).copy();
+
             if (sectionShift != 0) {
                 SubLevelNBTTranslator.rewriteSectionIndices(childTag, sectionShift);
             }
@@ -243,7 +247,7 @@ public final class SubLevelDimensionTeleport {
             } catch (final Exception e) {
                 Sable.LOGGER.error("plot.load failed for {}", memberId, e);
             }
-
+            //get pose position and orientation and add to sublevles in new dimension
             final Pose3d sourcePose = savedPoses.get(memberId);
             final Vector3d relPos = new Vector3d(sourcePose.position()).sub(mainSourcePose.position());
 
@@ -271,7 +275,7 @@ public final class SubLevelDimensionTeleport {
             newMember.updateLastPose();
             newMember.updateBoundingBox();
 
-
+            //put new data into here
             translationsByMember.put(memberId, childTranslation);
             targetPosesByMember.put(memberId, new Pose3d(newMember.logicalPose()));
 
@@ -288,6 +292,7 @@ public final class SubLevelDimensionTeleport {
                 //targetPhysics.getPipeline().addLinearAndAngularVelocity(newMember, lvOut, avOut);
             }*/
             //Allow for physics transfer across dimensions
+            //set names to newMember
             if (savedNames.get(memberId) != null){
                 newMember.setName(savedNames.get(memberId));
             }
@@ -296,7 +301,7 @@ public final class SubLevelDimensionTeleport {
             }
             newMember.updateBoundingBox();
 
-
+            //add newMember to physics and tracking System
             targetContainer.trackingSystem().onSubLevelAdded(newMember);
             targetPhysics.getPipeline().wakeUp(newMember);
 
@@ -307,7 +312,8 @@ public final class SubLevelDimensionTeleport {
 
 
         SubLevelEntityHandler.respawnCapturedEntities(targetLevel, capturedEntities, translationsByMember, savedPoses, targetPosesByMember);
-
+        //respawn entities^
+        //remove oldMember tracking
         for (final ServerSubLevel oldMember : family) {
             final ChunkPos plotPos = oldMember.getPlot().plotPos;
             final Vector2i origin = sourceContainer.getOrigin();
@@ -325,6 +331,7 @@ public final class SubLevelDimensionTeleport {
             }
             oldMember.getTrackingPlayers().clear();
         }
+
 
         SubLevelEntityHandler.teleportCapturedPlayers(capturedPlayers, targetLevel, mainSourcePose, destination.logicalPose());
         return destination;
