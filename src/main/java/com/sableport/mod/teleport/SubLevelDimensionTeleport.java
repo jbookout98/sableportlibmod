@@ -342,7 +342,11 @@ public final class SubLevelDimensionTeleport {
         final int sideLength = 1 << container.getLogSideLength();
         for (int x = 0; x < sideLength; x++) {
             for (int z = 0; z < sideLength; z++) {
+                long key = ((long) x << 32) | (z & 0xFFFFFFFFL);
 
+                if (claimed.contains(key)) {
+                    continue;
+                }
                 if (!container.getOccupancy().get(container.getIndex(x, z))) {
                     return new Vector2i(x, z);
                 }
@@ -353,7 +357,7 @@ public final class SubLevelDimensionTeleport {
 
 
     /**
-     * gets family transversal. Downward family tree
+     * Discovers children from root after getting root:
      * @param root
      * @param container
      * @return
