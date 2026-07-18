@@ -1,4 +1,3 @@
-
 package com.sableport.mod.teleport;
 
 import com.sableport.mod.nbt.SubLevelNBTTranslator;
@@ -8,18 +7,14 @@ import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.Pose3d;
-import dev.ryanhcode.sable.network.packets.tcp.ClientboundStopTrackingSubLevelPacket;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.ServerLevelPlot;
-import dev.ryanhcode.sable.sublevel.storage.SubLevelOccupancySavedData;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import net.minecraft.nbt.*;
-import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniond;
@@ -65,9 +60,14 @@ public final class SubLevelDimensionTeleport {
             return null;
         }
 
+        final long teleportStart = System.nanoTime();
+
+        Sable.LOGGER.info("========== TELEPORT BEGIN ==========");
+        Sable.LOGGER.info("Source: {}", source.getUniqueId());
+        Sable.LOGGER.info("Source Dimension: {}", sourceLevel.dimension().location());
+        Sable.LOGGER.info("Target Dimension: {}", targetLevel.dimension().location());
 
         UUID rootId = com.sableport.mod.storage.SubLevelHierarchyPerDimension.getRootId(source, sourceContainer);
-
 
 
         final ServerSubLevel rootSource = (ServerSubLevel) sourceContainer.getSubLevel(rootId);
@@ -81,10 +81,15 @@ public final class SubLevelDimensionTeleport {
         if (sourceLevel == targetLevel) {
             return sameDimTeleport(rootSource, sourceLevel, targetPosition, targetOrientation);
         }
+        final long familyStart = System.nanoTime();
 
         List<ServerSubLevel> family = collectFamilyTransitive(rootSource, sourceContainer);
 
-
+        Sable.LOGGER.info(
+                "Family discovery: {} members ({} ms)",
+                family.size(),
+                elapsedMs(familyStart)
+        );
 
 
         final Map<UUID, CompoundTag> savedPlots = new HashMap<>();
@@ -94,8 +99,14 @@ public final class SubLevelDimensionTeleport {
         final Map<UUID, String> savedNames = new HashMap<>();
         final Map<UUID, CompoundTag> savedUserData = new HashMap<>();
 
+        final long saveStart = System.nanoTime();
+        long totalNBTBytes = 0;
+
         for (final ServerSubLevel member : family) {
-            savedPlots.put(member.getUniqueId(), member.getPlot().save());
+            final CompoundTag savedPlot = member.getPlot().save();
+            savedPlots.put(member.getUniqueId(), savedPlot);
+            totalNBTBytes += savedPlot.sizeInBytes();
+
             savedPoses.put(member.getUniqueId(), new Pose3d(member.logicalPose()));
 
             final RigidBodyHandle h = RigidBodyHandle.of(member);
@@ -111,13 +122,36 @@ public final class SubLevelDimensionTeleport {
             savedUserData.put(member.getUniqueId(), member.getUserDataTag());
         }
 
-        final List<CapturedPlayer> capturedPlayers = SubLevelEntityHandler.capturePlayersInBounds(sourceLevel, family);
-        final List<CapturedEntity> capturedEntities = SubLevelEntityHandler.captureEntitiesInBoundsForFamily(sourceLevel, family, sourceContainer);
+        Sable.LOGGER.info(
+                "Saved {} plots ({}) in {} ms",
+                family.size(),
+                formatBytes(totalNBTBytes),
+                elapsedMs(saveStart)
+        );
 
+        final long captureStart = System.nanoTime();
+
+        final List<CapturedPlayer> capturedPlayers =
+                SubLevelEntityHandler.capturePlayersInBounds(sourceLevel, family);
+        final List<CapturedEntity> capturedEntities =
+                SubLevelEntityHandler.captureEntitiesInBoundsForFamily(
+                        sourceLevel,
+                        family,
+                        sourceContainer
+                );
+
+        Sable.LOGGER.info(
+                "Captured {} players and {} entities in {} ms",
+                capturedPlayers.size(),
+                capturedEntities.size(),
+                elapsedMs(captureStart)
+        );
 
 
         final List<Vector2i> targetPlots = new ArrayList<>();
         final Set<Long> claimedSlots = new HashSet<>();
+
+        final long allocationSearch = System.nanoTime();
 
         for (int i = 0; i < family.size(); i++) {
 
@@ -133,24 +167,31 @@ public final class SubLevelDimensionTeleport {
             targetPlots.add(p);
 
         }
+        Sable.LOGGER.info(
+                "Found {} destination plots in {} ms",
+                targetPlots.size(),
+                elapsedMs(allocationSearch)
+        );
+
+        final long removalStart = System.nanoTime();
+
+        Sable.LOGGER.info(
+                "Removing {} source sublevels...",
+                family.size()
+        );
 
         for (final ServerSubLevel sub : family) {
-
-            final ServerLevelPlot p = sub.getPlot();
-            final Vector2i origin = sourceContainer.getOrigin();
-            final int localX = p.plotPos.x - origin.x;
-            final int localZ = p.plotPos.z - origin.y;
-
-            sourceContainer.removeSubLevel(sub, SubLevelRemovalReason.REMOVED);
-
-            SubLevelOccupancySavedData.getOrLoad(sourceLevel).setDirty();
-
-            try {
-                sourceContainer.getHoldingChunkMap().queueDeletion(sub);
-            } catch (final Exception e) {
-                Sable.LOGGER.error("Failed to queue deletion for {}", sub.getUniqueId(), e);
-            }
+            sourceContainer.removeSubLevel(
+                    sub,
+                    SubLevelRemovalReason.REMOVED
+            );
         }
+
+        Sable.LOGGER.info(
+                "Removed {} source sublevels in {} ms",
+                family.size(),
+                elapsedMs(removalStart)
+        );
 
 
         final int logPlotSize = sourceContainer.getLogPlotSize();
@@ -162,6 +203,7 @@ public final class SubLevelDimensionTeleport {
         // overworld -64 - 0 -64 / 16
         //=-4. So move upwards 4 sections from wherever.
         final List<PlotTranslation> translations = new ArrayList<>();
+        final long translationStart = System.nanoTime();
 
         //Whole loop is important later for math.
         //Basically when saving nbt data you need old positions to get it properly saved and properly reloaded.
@@ -180,38 +222,62 @@ public final class SubLevelDimensionTeleport {
             translations.add(new PlotTranslation(minX, maxX, minZ, maxZ, offsetX, offsetZ));
         }
 
+        Sable.LOGGER.info(
+                "Built {} translation entries in {} ms",
+                translations.size(),
+                elapsedMs(translationStart)
+        );
+
         final Pose3d mainSourcePose = savedPoses.get(sourceUuid);
 
         ServerSubLevel destination = null;
         final Map<UUID, PlotTranslation> translationsByMember = new HashMap<>();
         final Map<UUID, Pose3d> targetPosesByMember = new HashMap<>();
 
+        final long recreationStart = System.nanoTime();
+
+        Sable.LOGGER.info(
+                "Recreating {} destination sublevels...",
+                family.size()
+        );
 
         for (int i = 0; i < family.size(); i++) {
 
             final ServerSubLevel member = family.get(i);
             final Vector2i targetPlotCoord = targetPlots.get(i);
-            final long plotKey = ChunkPos.asLong(targetPlotCoord.x, targetPlotCoord.y);
 
-            final Set<ServerPlayer> recipients = new HashSet<>(targetLevel.players());
 
-            for (final CapturedPlayer cp : capturedPlayers) {
-                recipients.add(cp.player());
-            }
-            for (final ServerPlayer player : recipients) {
-                player.connection.send(
-                        new ClientboundCustomPayloadPacket(
-                                new ClientboundStopTrackingSubLevelPacket(plotKey)
-                        )
-                );
-            }
             //Making sure we clear tracking at new plots we are spawning to.
 
             final UUID memberId = member.getUniqueId();
+            final long memberStart = System.nanoTime();
+
+            Sable.LOGGER.info(
+                    "Recreating member {}/{} ({}) at target plot {},{}",
+                    i + 1,
+                    family.size(),
+                    memberId,
+                    targetPlotCoord.x,
+                    targetPlotCoord.y
+            );
+
             final PlotTranslation childTranslation = translations.get(i);
 
-            final ServerSubLevel newMember = (ServerSubLevel) targetContainer.allocateSubLevel(
-                    memberId, targetPlotCoord.x, targetPlotCoord.y, savedPoses.get(memberId));
+            final long allocationStart = System.nanoTime();
+
+            final ServerSubLevel newMember =
+                    (ServerSubLevel) targetContainer.allocateSubLevel(
+                            memberId,
+                            targetPlotCoord.x,
+                            targetPlotCoord.y,
+                            savedPoses.get(memberId)
+                    );
+
+            Sable.LOGGER.info(
+                    "Allocated member {} in {} ms",
+                    memberId,
+                    elapsedMs(allocationStart)
+            );
 
             if (newMember == null) {
                 Sable.LOGGER.error("Failed to allocate family member {}", memberId);
@@ -225,6 +291,7 @@ public final class SubLevelDimensionTeleport {
             //Rewrite NBT data to properly follow the new dimension.
             //All coord data should rewritten here
             final CompoundTag childTag = savedPlots.get(memberId).copy();
+            final long rewriteStart = System.nanoTime();
 
             if (sectionShift != 0) {
                 SubLevelNBTTranslator.rewriteSectionIndices(childTag, sectionShift);
@@ -234,16 +301,34 @@ public final class SubLevelDimensionTeleport {
             SubLevelNBTTranslator.rewriteInternalBlockPosRefs(childTag, translations);
 
             if (childTag.contains("Contraption")) {
-                SubLevelNBTTranslator.rewriteContraptionTagAnchorsUniversal(childTag.getCompound("Contraption"), translations);
+                SubLevelNBTTranslator.rewriteContraptionTagAnchorsUniversal(
+                        childTag.getCompound("Contraption"),
+                        translations
+                );
             }
+
+            Sable.LOGGER.info(
+                    "Rewrote NBT for {} in {} ms",
+                    memberId,
+                    elapsedMs(rewriteStart)
+            );
 
             final CompoundTag meta = childTag.copy();
 
             meta.putInt("plot_x", targetPlotCoord.x);
             meta.putInt("plot_z", targetPlotCoord.y);
 
+            final long loadStart = System.nanoTime();
+
             try {
                 newMember.getPlot().load(meta);
+
+                Sable.LOGGER.info(
+                        "Loaded plot {} ({}) in {} ms",
+                        memberId,
+                        formatBytes(meta.sizeInBytes()),
+                        elapsedMs(loadStart)
+                );
             } catch (final Exception e) {
                 Sable.LOGGER.error("plot.load failed for {}", memberId, e);
             }
@@ -268,6 +353,8 @@ public final class SubLevelDimensionTeleport {
             final Vector3d childTargetPos = new Vector3d(targetPosition).add(relPos);
 
             final SubLevelPhysicsSystem targetPhysics = targetContainer.physicsSystem();
+            final long physicsStart = System.nanoTime();
+
             targetPhysics.getPipeline().resetVelocity(newMember);
             targetPhysics.getPipeline().teleport(newMember, childTargetPos, childTargetOrient);
             newMember.logicalPose().position().set(childTargetPos);
@@ -302,41 +389,77 @@ public final class SubLevelDimensionTeleport {
             newMember.updateBoundingBox();
 
             //add newMember to physics and tracking System
-            targetContainer.trackingSystem().onSubLevelAdded(newMember);
+            //targetContainer.trackingSystem().onSubLevelAdded(newMember);
             targetPhysics.getPipeline().wakeUp(newMember);
 
+            Sable.LOGGER.info(
+                    "Physics setup for {} took {} ms",
+                    memberId,
+                    elapsedMs(physicsStart)
+            );
 
+            Sable.LOGGER.info(
+                    "Finished member {} in {} ms",
+                    memberId,
+                    elapsedMs(memberStart)
+            );
         }
 
+        Sable.LOGGER.info(
+                "Recreated all {} sublevels in {} ms",
+                family.size(),
+                elapsedMs(recreationStart)
+        );
 
 
+        final long entityRespawnStart = System.nanoTime();
 
-        SubLevelEntityHandler.respawnCapturedEntities(targetLevel, capturedEntities, translationsByMember, savedPoses, targetPosesByMember);
-        //respawn entities^
-        //remove oldMember tracking
-        for (final ServerSubLevel oldMember : family) {
-            final ChunkPos plotPos = oldMember.getPlot().plotPos;
-            final Vector2i origin = sourceContainer.getOrigin();
-            final long l = ChunkPos.asLong(plotPos.x - origin.x, plotPos.z - origin.y);
+        SubLevelEntityHandler.respawnCapturedEntities(
+                targetLevel,
+                capturedEntities,
+                translationsByMember,
+                savedPoses,
+                targetPosesByMember
+        );
 
-            for (final UUID trackingUuid : oldMember.getTrackingPlayers()) {
-                final ServerPlayer trackingPlayer = sourceLevel.getServer().getPlayerList().getPlayer(trackingUuid);
-                if (trackingPlayer != null) {
-                    trackingPlayer.connection.send(
-                            new ClientboundCustomPayloadPacket(
-                                    new ClientboundStopTrackingSubLevelPacket(l)
-                            )
-                    );
-                }
-            }
-            oldMember.getTrackingPlayers().clear();
+        Sable.LOGGER.info(
+                "Respawned {} entities in {} ms",
+                capturedEntities.size(),
+                elapsedMs(entityRespawnStart)
+        );
+
+        if (destination == null) {
+            Sable.LOGGER.error(
+                    "Teleport failed: destination root was not allocated"
+            );
+            return null;
         }
 
+        final long playerTeleportStart = System.nanoTime();
 
-        SubLevelEntityHandler.teleportCapturedPlayers(capturedPlayers, targetLevel, mainSourcePose, destination.logicalPose());
+        SubLevelEntityHandler.teleportCapturedPlayers(
+                capturedPlayers,
+                targetLevel,
+                mainSourcePose,
+                destination.logicalPose()
+        );
+
+        Sable.LOGGER.info(
+                "Teleported {} players in {} ms",
+                capturedPlayers.size(),
+                elapsedMs(playerTeleportStart)
+        );
+
+        logHeapUsage();
+
+        Sable.LOGGER.info(
+                "TOTAL TELEPORT TIME: {} ms",
+                elapsedMs(teleportStart)
+        );
+        Sable.LOGGER.info("========== TELEPORT COMPLETE ==========");
+
         return destination;
     }
-
 
 
     /**
@@ -397,7 +520,6 @@ public final class SubLevelDimensionTeleport {
     }
 
 
-
     /**
      * Fast same dimension teleportation if using this command
      * @param source
@@ -416,6 +538,54 @@ public final class SubLevelDimensionTeleport {
         c.physicsSystem().getPipeline().resetVelocity(source);
         c.physicsSystem().getPipeline().teleport(source, targetPosition, orient);
         c.physicsSystem().getPipeline().wakeUp(source);
+
+
+        logHeapUsage();
+
         return source;
+    }
+
+    private static double elapsedMs(final long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000.0;
+    }
+
+    private static String formatBytes(final long bytes) {
+        if (bytes >= 1024L * 1024L * 1024L) {
+            return String.format(
+                    Locale.ROOT,
+                    "%.2f GiB",
+                    bytes / (1024.0 * 1024.0 * 1024.0)
+            );
+        }
+
+        if (bytes >= 1024L * 1024L) {
+            return String.format(
+                    Locale.ROOT,
+                    "%.2f MiB",
+                    bytes / (1024.0 * 1024.0)
+            );
+        }
+
+        if (bytes >= 1024L) {
+            return String.format(
+                    Locale.ROOT,
+                    "%.2f KiB",
+                    bytes / 1024.0
+            );
+        }
+
+        return bytes + " B";
+    }
+
+    private static void logHeapUsage() {
+        final Runtime runtime = Runtime.getRuntime();
+        final long usedBytes = runtime.totalMemory() - runtime.freeMemory();
+
+        Sable.LOGGER.info(
+                "Heap: {} used / {} allocated / {} max",
+                formatBytes(usedBytes),
+                formatBytes(runtime.totalMemory()),
+                formatBytes(runtime.maxMemory())
+        );
     }
 }

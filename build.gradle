@@ -52,8 +52,8 @@ dependencies {
     }
 
     // Sable can stay on CurseMaven, that's fine.
-    compileOnly "curse.maven:sable-1312371:8007005"
-    localRuntime "curse.maven:sable-1312371:8007005"
+    compileOnly "curse.maven:sable-1312371:8263584"
+    localRuntime "curse.maven:sable-1312371:8263584"
 
     // REMOVED the curse.maven lines for Create and Flywheel.
     // ADDED the official Create, Flywheel, Ponder, and Registrate dependencies:

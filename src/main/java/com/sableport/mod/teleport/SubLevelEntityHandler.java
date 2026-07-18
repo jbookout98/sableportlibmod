@@ -145,7 +145,7 @@ public final class SubLevelEntityHandler {
      * Teleports captured players to the new dimension.
      */
     public static void teleportCapturedPlayers(final List<SubLevelDimensionTeleport.CapturedPlayer> captured, final ServerLevel targetLevel,
-                                                final Pose3d sourcePose, final Pose3d targetPose) {
+                                               final Pose3d sourcePose, final Pose3d targetPose) {
         for (final SubLevelDimensionTeleport.CapturedPlayer cp : captured) {
             if (cp.player().isRemoved()) continue;
 
