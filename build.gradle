@@ -121,8 +121,12 @@ publishing {
             from components.java
         }
     }
+
     repositories {
-        maven { url "file://${project.projectDir}/repo" }
+        maven {
+            name = "LocalProjectRepo"
+            url = layout.projectDirectory.dir("repo")
+        }
     }
 }
 

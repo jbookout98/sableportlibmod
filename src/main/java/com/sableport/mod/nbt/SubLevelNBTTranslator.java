@@ -1,11 +1,14 @@
 package com.sableport.mod.nbt;
 
 import com.sableport.mod.teleport.SubLevelDimensionTeleport;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.IntArrayTag;
-import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.Tag;
+import dev.ryanhcode.sable.companion.math.Pose3d;
+import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.*;
+import org.joml.Quaterniond;
+import org.joml.Vector3d;
+import org.joml.Vector3dc;
 
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collection;
 
@@ -118,8 +121,29 @@ public final class SubLevelNBTTranslator {
                 }
 
                 rewriteInternalBlockPosRefsInTag(ct, translations);
-            } else if (child instanceof ListTag list) {
+            } else if (child instanceof LongTag longTag && key.equals("Goal")) {
 
+                final BlockPos oldPos = BlockPos.of(longTag.getAsLong());
+
+                for (final SubLevelDimensionTeleport.PlotTranslation translation : translations) {
+
+                    if (oldPos.getX() < translation.minX()
+                            || oldPos.getX() > translation.maxX()
+                            || oldPos.getZ() < translation.minZ()
+                            || oldPos.getZ() > translation.maxZ()) {
+                        continue;
+                    }
+
+                    final BlockPos newPos = oldPos.offset(
+                            Math.toIntExact(translation.offsetX()),
+                            0,
+                            Math.toIntExact(translation.offsetZ())
+                    );
+
+                    tag.putLong(key, newPos.asLong());
+                    break;
+                }
+            }else if (child instanceof ListTag list) {
                 for (Tag value : list) {
                     if (value instanceof CompoundTag listCt) {
                         rewriteInternalBlockPosRefsInTag(listCt, translations);
@@ -129,6 +153,105 @@ public final class SubLevelNBTTranslator {
         }
     }
 
+    /**
+     * Transforms Simulated rope particle positions from the old root world pose
+     * into the destination root world pose.
+     *
+     * Rope attachment BlockPos values are translated separately by
+     * rewriteInternalBlockPosRefs().
+     */
+    public static void rewriteRopeStrandWorldPoints(
+            final CompoundTag plotTag,
+            final Pose3d sourceRootPose,
+            final Vector3d targetRootPosition,
+            final @Nullable Quaterniond targetRootOrientation
+    ) {
+        final CompoundTag chunks = plotTag.getCompound("chunks");
+
+        final Quaterniond rotationDelta;
+        if (targetRootOrientation != null){
+
+            rotationDelta = new Quaterniond(targetRootOrientation).mul(
+                            new Quaterniond(
+                                    sourceRootPose.orientation()).invert()).normalize();
+        }else{
+            rotationDelta = new Quaterniond();
+        }
+
+
+
+        for (final String chunkKey : chunks.getAllKeys()) {
+            final CompoundTag chunk = chunks.getCompound(chunkKey);
+            final ListTag blockEntities =
+                    chunk.getList("block_entities", Tag.TAG_COMPOUND);
+
+            for (int i = 0; i < blockEntities.size(); i++) {
+                final CompoundTag blockEntity = blockEntities.getCompound(i);
+
+                if (!blockEntity.contains("Strand", Tag.TAG_COMPOUND)) {
+                    continue;
+                }
+
+                final CompoundTag strand = blockEntity.getCompound("Strand");
+
+                rewriteRopePointList(
+                        strand,
+                        sourceRootPose.position(),
+                        targetRootPosition,
+                        rotationDelta
+                );
+            }
+        }
+    }
+
+    private static void rewriteRopePointList(
+            final CompoundTag strand,
+            final Vector3dc sourceRootPosition,
+            final Vector3dc targetRootPosition,
+            final Quaterniond rotationDelta )
+    {
+
+        if (!strand.contains("points", Tag.TAG_LIST)) {
+            return;
+        }
+
+        final ListTag oldPoints = strand.getList("points", Tag.TAG_LIST);
+
+        final ListTag newPoints = new ListTag();
+
+        for (int i = 0; i < oldPoints.size(); i++) {
+            final ListTag oldPoint = oldPoints.getList(i);
+
+            if (oldPoint.size() != 3) {
+                newPoints.add(oldPoint.copy());
+                continue;
+            }
+
+            final Vector3d transformed = new Vector3d(
+                    oldPoint.getDouble(0),
+                    oldPoint.getDouble(1),
+                    oldPoint.getDouble(2)
+            );
+
+            // Convert world point into coordinates relative to the old family root.
+            transformed.sub(sourceRootPosition);
+
+            // Apply the same rotation used for the complete teleported family.
+            rotationDelta.transform(transformed);
+
+            // Place it relative to the destination family root.
+            transformed.add(targetRootPosition);
+
+            final ListTag newPoint = new ListTag();
+            newPoint.add(DoubleTag.valueOf(transformed.x));
+            newPoint.add(DoubleTag.valueOf(transformed.y));
+            newPoint.add(DoubleTag.valueOf(transformed.z));
+
+            newPoints.add(newPoint);
+        }
+
+        strand.put("points", newPoints);
+    }
     /**
      * Specifically handles offset translations for Contraption entity anchor points.
      */

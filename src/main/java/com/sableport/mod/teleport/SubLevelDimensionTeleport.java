@@ -3,6 +3,7 @@ package com.sableport.mod.teleport;
 import com.sableport.mod.nbt.SubLevelNBTTranslator;
 import com.sableport.mod.storage.SubLevelHierarchyPerDimension;
 import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintHandle;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
@@ -104,6 +105,28 @@ public final class SubLevelDimensionTeleport {
 
         for (final ServerSubLevel member : family) {
             final CompoundTag savedPlot = member.getPlot().save();
+
+            //Just in case NBT data gets changed to get rope data.
+//            for (final String chunkKey
+//                    : savedPlot.getCompound("chunks").getAllKeys()) {
+//
+//                final ListTag blockEntities =
+//                        savedPlot.getCompound("chunks")
+//                                .getCompound(chunkKey)
+//                                .getList("block_entities", Tag.TAG_COMPOUND);
+//
+//                for (int i = 0; i < blockEntities.size(); i++) {
+//                    final CompoundTag blockEntity =
+//                            blockEntities.getCompound(i);
+//
+//                    if (blockEntity.contains("Strand", Tag.TAG_COMPOUND)) {
+//                        Sable.LOGGER.info(
+//                                "ROPE STRAND NBT: {}",
+//                                blockEntity.getCompound("Strand")
+//                        );
+//                    }
+//                }
+//            }
             savedPlots.put(member.getUniqueId(), savedPlot);
             totalNBTBytes += savedPlot.sizeInBytes();
 
@@ -139,6 +162,7 @@ public final class SubLevelDimensionTeleport {
                         family,
                         sourceContainer
                 );
+
 
         Sable.LOGGER.info(
                 "Captured {} players and {} entities in {} ms",
@@ -233,6 +257,8 @@ public final class SubLevelDimensionTeleport {
         ServerSubLevel destination = null;
         final Map<UUID, PlotTranslation> translationsByMember = new HashMap<>();
         final Map<UUID, Pose3d> targetPosesByMember = new HashMap<>();
+        final List<ServerSubLevel> recreatedMembers = new ArrayList<>(family.size());
+        final SubLevelPhysicsSystem targetPhysics = targetContainer.physicsSystem();
 
         final long recreationStart = System.nanoTime();
 
@@ -299,7 +325,10 @@ public final class SubLevelDimensionTeleport {
 
             SubLevelNBTTranslator.rewriteBlockEntityPositions(childTag, childTranslation.offsetX(), childTranslation.offsetZ());
             SubLevelNBTTranslator.rewriteInternalBlockPosRefs(childTag, translations);
-
+            SubLevelNBTTranslator.rewriteRopeStrandWorldPoints(
+                    childTag,
+                    mainSourcePose, (Vector3d) targetPosition, (Quaterniond) targetOrientation
+            );
             if (childTag.contains("Contraption")) {
                 SubLevelNBTTranslator.rewriteContraptionTagAnchorsUniversal(
                         childTag.getCompound("Contraption"),
@@ -352,7 +381,6 @@ public final class SubLevelDimensionTeleport {
 
             final Vector3d childTargetPos = new Vector3d(targetPosition).add(relPos);
 
-            final SubLevelPhysicsSystem targetPhysics = targetContainer.physicsSystem();
             final long physicsStart = System.nanoTime();
 
             targetPhysics.getPipeline().resetVelocity(newMember);
@@ -388,12 +416,12 @@ public final class SubLevelDimensionTeleport {
             }
             newMember.updateBoundingBox();
 
-            //add newMember to physics and tracking System
-            //targetContainer.trackingSystem().onSubLevelAdded(newMember);
-            targetPhysics.getPipeline().wakeUp(newMember);
+            // Keep every recreated member asleep until the complete family has
+            // been loaded and moved into its final destination pose.
+            recreatedMembers.add(newMember);
 
             Sable.LOGGER.info(
-                    "Physics setup for {} took {} ms",
+                    "Physics positioning for {} took {} ms",
                     memberId,
                     elapsedMs(physicsStart)
             );
@@ -407,10 +435,21 @@ public final class SubLevelDimensionTeleport {
 
         Sable.LOGGER.info(
                 "Recreated all {} sublevels in {} ms",
-                family.size(),
+                recreatedMembers.size(),
                 elapsedMs(recreationStart)
         );
 
+        final long familyWakeStart = System.nanoTime();
+
+        for (final ServerSubLevel recreatedMember : recreatedMembers) {
+            targetPhysics.getPipeline().wakeUp(recreatedMember);
+        }
+
+        Sable.LOGGER.info(
+                "Woke {} recreated sublevels together in {} ms",
+                recreatedMembers.size(),
+                elapsedMs(familyWakeStart)
+        );
 
         final long entityRespawnStart = System.nanoTime();
 
