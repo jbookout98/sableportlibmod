@@ -2,6 +2,7 @@ package com.sableport.mod.API;
 
 import com.sableport.mod.storage.SubLevelHierarchyPerDimension;
 import com.sableport.mod.teleport.SubLevelDimensionTeleport;
+import com.sableport.mod.teleport.state.SubLevelTeleportStateAdapter;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.BoundingBox3dc;
@@ -12,6 +13,8 @@ import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Quaterniondc;
 import org.joml.Vector3dc;
+import com.sableport.mod.teleport.state.CapturedTeleportState;
+import com.sableport.mod.teleport.state.SubLevelTeleportStateRegistry;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -71,9 +74,13 @@ public final class SablePortAPI {
                 : null;
     }
 
-    public static List<ServerSubLevel> getFamily(
-            final ServerSubLevel source
-    ) {
+    public static void registerTeleportStateAdapter(final SubLevelTeleportStateAdapter<?> adapter)
+    {
+        SubLevelTeleportStateRegistry.register(adapter);
+    }
+
+    public static List<ServerSubLevel> getFamily(final ServerSubLevel source)
+    {
         final ServerSubLevel root = getFamilyRoot(source);
 
         if (root == null) {

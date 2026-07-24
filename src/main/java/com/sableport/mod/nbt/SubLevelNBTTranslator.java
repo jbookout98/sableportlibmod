@@ -252,9 +252,8 @@ public final class SubLevelNBTTranslator {
 
         strand.put("points", newPoints);
     }
-    /**
-     * Specifically handles offset translations for Contraption entity anchor points.
-     */
+
+
     public static void rewriteContraptionTagAnchorsUniversal(final CompoundTag contraption, final Collection<SubLevelDimensionTeleport.PlotTranslation> translations) {
 
         if (contraption.contains("Anchor")) {
@@ -279,6 +278,115 @@ public final class SubLevelNBTTranslator {
                     rewriteContraptionTagAnchorsUniversal(sub, translations);
                 }
             }
+        }
+    }
+    /**
+     Translates pending block and fluid tick positions stored inside the
+      serialized plot chunks
+      Vanilla scheduled tick entries.
+    */
+    public static void rewriteScheduledTickPositions(
+            final CompoundTag plotTag,
+            final SubLevelDimensionTeleport.PlotTranslation translation
+    ) {
+        if (!plotTag.contains("chunks", Tag.TAG_COMPOUND)) {
+            return;
+        }
+
+        final CompoundTag chunks =
+                plotTag.getCompound("chunks");
+
+        for (final String chunkKey : chunks.getAllKeys()) {
+            final CompoundTag chunk =
+                    chunks.getCompound(chunkKey);
+
+            rewriteScheduledTickList(
+                    chunk,
+                    "block_ticks",
+                    translation
+            );
+
+            rewriteScheduledTickList(
+                    chunk,
+                    "fluid_ticks",
+                    translation
+            );
+
+            rewriteScheduledTickList(
+                    chunk,
+                    "BlockTicks",
+                    translation
+            );
+
+            rewriteScheduledTickList(
+                    chunk,
+                    "FluidTicks",
+                    translation
+            );
+        }
+    }
+
+    /**
+     Rewrites one serialized tick list without modifying its delay, priority or
+     registered type.
+     */
+    private static void rewriteScheduledTickList(
+            final CompoundTag chunk,
+            final String key,
+            final SubLevelDimensionTeleport.PlotTranslation translation
+    ) {
+        if (!chunk.contains(key, Tag.TAG_LIST)) {
+            return;
+        }
+
+        final ListTag ticks =
+                chunk.getList(
+                        key,
+                        Tag.TAG_COMPOUND
+                );
+
+        for (int index = 0;
+             index < ticks.size();
+             index++) {
+
+            final CompoundTag tick =
+                    ticks.getCompound(index);
+
+            if (!tick.contains("x", Tag.TAG_INT)
+                    || !tick.contains("z", Tag.TAG_INT)) {
+                continue;
+            }
+
+            final int oldX = tick.getInt("x");
+            final int oldZ = tick.getInt("z");
+
+            /*
+             * Ignore any malformed or external tick that does not belong to this
+             * member's original plot.
+             */
+            if (oldX < translation.minX()
+                    || oldX > translation.maxX()
+                    || oldZ < translation.minZ()
+                    || oldZ > translation.maxZ()) {
+                continue;
+            }
+
+            final long translatedX =
+                    oldX + translation.offsetX();
+
+            final long translatedZ =
+                    oldZ + translation.offsetZ();
+
+
+            tick.putInt(
+                    "x",
+                    Math.toIntExact(translatedX)
+            );
+
+            tick.putInt(
+                    "z",
+                    Math.toIntExact(translatedZ)
+            );
         }
     }
 }

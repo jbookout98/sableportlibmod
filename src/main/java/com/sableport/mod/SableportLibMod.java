@@ -11,17 +11,30 @@ import org.slf4j.Logger;
 
 @Mod(SableportLibMod.MODID)
 public class SableportLibMod {
-    public static final String MODID = "sableportlibmod";
-    public static final Logger LOGGER = LogUtils.getLogger();
 
-    public SableportLibMod(IEventBus modEventBus, ModContainer modContainer) {
+    public static final String MODID =
+            "sableportlibmod";
+
+    public static final Logger LOGGER =
+            LogUtils.getLogger();
+
+    public SableportLibMod(
+            final IEventBus modEventBus,
+            final ModContainer modContainer
+    ) {
         NeoForge.EVENT_BUS.register(this);
-        LOGGER.info("Sableport library initialized");
+
+        LOGGER.info(
+                "Sableport library initialized"
+        );
     }
 
     @SubscribeEvent
-    public void onRegisterCommands(RegisterCommandsEvent event) {
-        SableTeleportCommand.register(event.getDispatcher());
+    public void onRegisterCommands(
+            final RegisterCommandsEvent event
+    ) {
+        SableTeleportCommand.register(
+                event.getDispatcher()
+        );
     }
-
 }

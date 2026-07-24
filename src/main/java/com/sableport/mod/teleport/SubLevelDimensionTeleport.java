@@ -2,6 +2,8 @@ package com.sableport.mod.teleport;
 
 import com.sableport.mod.nbt.SubLevelNBTTranslator;
 import com.sableport.mod.storage.SubLevelHierarchyPerDimension;
+import com.sableport.mod.teleport.state.CapturedTeleportState;
+import com.sableport.mod.teleport.state.SubLevelTeleportStateRegistry;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.physics.constraint.PhysicsConstraintHandle;
 import dev.ryanhcode.sable.api.physics.handle.RigidBodyHandle;
@@ -13,6 +15,7 @@ import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.plot.ServerLevelPlot;
 import dev.ryanhcode.sable.sublevel.storage.SubLevelRemovalReason;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
+import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.*;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -37,7 +40,26 @@ public final class SubLevelDimensionTeleport {
 
     public record CapturedPlayer(ServerPlayer player, Vec3 sourceWorldPos, float yRot, float xRot) {}
 
-    public record PlotTranslation(int minX, int maxX, int minZ, int maxZ, long offsetX, long offsetZ) {}
+    public record PlotTranslation(
+            int minX,
+            int maxX,
+            int minZ,
+            int maxZ,
+            long offsetX,
+            long offsetZ
+    ) {
+        public boolean contains(final int x, final int z) {
+            return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+        }
+
+        public BlockPos translate(final BlockPos source) {
+            return source.offset(
+                    Math.toIntExact(offsetX),
+                    0,
+                    Math.toIntExact(offsetZ)
+            );
+        }
+    }
 
     /**
      *
@@ -57,7 +79,7 @@ public final class SubLevelDimensionTeleport {
         final ServerSubLevelContainer sourceContainer = SubLevelContainer.getContainer(sourceLevel);
         final ServerSubLevelContainer targetContainer = SubLevelContainer.getContainer(targetLevel);
 
-        if (targetContainer == null) {
+        if (sourceContainer == null || targetContainer == null) {
             return null;
         }
 
@@ -152,6 +174,13 @@ public final class SubLevelDimensionTeleport {
                 elapsedMs(saveStart)
         );
 
+        final List<CapturedTeleportState<?>> capturedExternalStates =
+                SubLevelTeleportStateRegistry.captureAll(
+                        sourceLevel,
+                        family,
+                        sourceContainer
+                );
+
         final long captureStart = System.nanoTime();
 
         final List<CapturedPlayer> capturedPlayers =
@@ -215,6 +244,10 @@ public final class SubLevelDimensionTeleport {
                 "Removed {} source sublevels in {} ms",
                 family.size(),
                 elapsedMs(removalStart)
+        );
+
+        SubLevelHierarchyPerDimension.invalidateFamily(
+                family.stream().map(ServerSubLevel::getUniqueId).toList()
         );
 
 
@@ -310,6 +343,23 @@ public final class SubLevelDimensionTeleport {
                 continue;
             }
 
+            final String savedName =
+                    savedNames.get(memberId);
+
+            if (savedName != null) {
+                newMember.setName(savedName);
+            }
+
+            final CompoundTag userData =
+                    savedUserData.get(memberId);
+
+            if (userData != null) {
+
+                newMember.setUserDataTag(
+                        userData.copy()
+                );
+            }
+
             if (i == 0){
                 destination = newMember;
             }
@@ -323,12 +373,20 @@ public final class SubLevelDimensionTeleport {
                 SubLevelNBTTranslator.rewriteSectionIndices(childTag, sectionShift);
             }
 
+            //SUBLEVEL SAVING NBT DATA
             SubLevelNBTTranslator.rewriteBlockEntityPositions(childTag, childTranslation.offsetX(), childTranslation.offsetZ());
+            SubLevelNBTTranslator.rewriteScheduledTickPositions(childTag, childTranslation);
             SubLevelNBTTranslator.rewriteInternalBlockPosRefs(childTag, translations);
             SubLevelNBTTranslator.rewriteRopeStrandWorldPoints(
                     childTag,
-                    mainSourcePose, (Vector3d) targetPosition, (Quaterniond) targetOrientation
+                    mainSourcePose,
+                    new Vector3d(targetPosition),
+                    targetOrientation == null
+                            ? null
+                            : new Quaterniond(targetOrientation)
             );
+
+
             if (childTag.contains("Contraption")) {
                 SubLevelNBTTranslator.rewriteContraptionTagAnchorsUniversal(
                         childTag.getCompound("Contraption"),
@@ -408,12 +466,7 @@ public final class SubLevelDimensionTeleport {
             }*/
             //Allow for physics transfer across dimensions
             //set names to newMember
-            if (savedNames.get(memberId) != null){
-                newMember.setName(savedNames.get(memberId));
-            }
-            if (savedUserData.get(memberId) != null) {
-                newMember.setUserDataTag(savedUserData.get(memberId));
-            }
+
             newMember.updateBoundingBox();
 
             // Keep every recreated member asleep until the complete family has
@@ -437,6 +490,12 @@ public final class SubLevelDimensionTeleport {
                 "Recreated all {} sublevels in {} ms",
                 recreatedMembers.size(),
                 elapsedMs(recreationStart)
+        );
+
+        SubLevelTeleportStateRegistry.restoreAll(
+                targetLevel,
+                capturedExternalStates,
+                translationsByMember
         );
 
         final long familyWakeStart = System.nanoTime();
